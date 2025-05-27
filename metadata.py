@@ -1,14 +1,13 @@
 import json
 import logging
 import os
-import tree_sitter_python as tspython
 from pathlib import Path
 from traceback import format_exc
 from typing import List, Optional
 from openai import OpenAI
 from nearai import EntryLocation
 from nearai.openapi_client import EntryInformation
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
 from nearai.registry import registry
 from dotenv import load_dotenv
 from tree_sitter import Language, Parser
@@ -45,6 +44,12 @@ class Skill(BaseModel):
     outputModes: Optional[List[str]] = None
 
 
+class NearAIMetadataCard(BaseModel):
+    agent_description: str = Field(..., title="The description of agent", alias="description", description="The description of agent")
+    tags: List = Field(..., description="The list of tags associated with this agent according to it's functionality")
+    welcome_message: str = Field(..., description="The welcome message that agent should send to the user")
+
+
 class AgentCard(BaseModel):
     name: str
     description: str
@@ -72,8 +77,6 @@ def index(entry: EntryInformation):
     path = registry.download(entry_location, show_progress=True, verbose=True, force=True)
     logging.info(f"Entry was downloaded to {path}")
 
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
     # agent_py = Path(path, "agent.py").read_text("utf-8")
     agent_py = get_concatenated_files_to_analyze("agent.py", path)
 
@@ -83,6 +86,63 @@ def index(entry: EntryInformation):
 
     metadata_json = Path(path, "metadata.json").read_text("utf-8")
 
+    generate_a2a_card(agent_py, metadata_json, entry_location_str)
+    generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str)
+
+
+def generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    logging.info(f"Requesting LLM to generate NEAR AI metadata.json Card.")
+    resp = client.responses.create(
+        instructions="You're very good python engineer, and you can understand the python code very well."
+                     "You're provided with the python code that is a entrypoint to the agent (agent.py).  "
+                     "You're provided with the current description of the agent that can be incomplete (metadata.json)."
+                     "Your task is to generate very detailed description on what this agent is doing, but do not go into technical"
+                     "details, description should be in business language and not in technical language. "
+                     "And return it in the format of agent card with given schema:"
+                     f"{json.dumps(NearAIMetadataCard.model_json_schema(), indent=2)}",
+        input=[
+            {"role": "user", "content": f"// agent.py\n```python\n{agent_py}\n```"},
+            {"role": "user", "content": f"// metadata.json\n```json\n{metadata_json}\n```"},
+        ],
+        model="o4-mini",
+    )
+
+    card_raw = resp.output[1].content[0].text
+    logging.info(f"Agent card for {entry_location_str} created.")
+
+    Path('./cards').mkdir(exist_ok=True)
+    card_file_path = Path("./cards", f"{entry_location_str.replace('/', '_')}_metadata.json")
+
+    try:
+        if "```json" in card_raw:
+            card_raw = card_raw.split("```json")[1].split("```")[0]
+
+        card = NearAIMetadataCard(**json.loads(card_raw))
+        metadata_card = json.loads(metadata_json)
+        metadata_card["description"] = card.agent_description
+        metadata_card["tags"] = card.tags
+
+        if metadata_card.get("details") is None:
+            metadata_card["details"] = {}
+
+        if metadata_card.get("details").get("agent") is None:
+            metadata_card["details"]["agent"] = {}
+
+        if metadata_card.get("details").get("agent").get("welcome") is None:
+            metadata_card["details"]["agent"]["welcome"] = {}
+
+        metadata_card["details"]["agent"]["welcome"]["description"] = card.agent_description
+
+        with open(card_file_path, "w", encoding="utf-8") as f:
+            json.dump(metadata_card, f, indent=2)
+
+        logging.info(f"NEARAI metadata.json card for {entry_location_str} was successfully saved to {card_file_path}.")
+    except Exception as e:
+        logging.error(f"Error parsing NEARAI metadata.json card {card_raw}.\nError: {format_exc()}")
+
+def generate_a2a_card(agent_py, metadata_json, entry_location_str):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     logging.info(f"Requesting LLM to generate Agent Card.")
     resp = client.responses.create(
         instructions="You're very good python engineer, and you can understand the python code very well."
