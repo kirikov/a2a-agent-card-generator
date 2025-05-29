@@ -64,13 +64,8 @@ class AgentCard(BaseModel):
     skills: List[Skill]
 
 
-def index(entry: EntryInformation):
-    entry_location = EntryLocation(
-        namespace=entry.namespace,
-        name=entry.name,
-        version=entry.version
-    )
-    entry_location_str = f"{entry.namespace}/{entry.name}/{entry.version}"
+def index_by_location(entry_location: EntryLocation, output_directory: str = "./cards"):
+    entry_location_str = f"{entry_location.namespace}/{entry_location.name}/{entry_location.version}"
     logging.info(f"Starting indexing of entry: {entry_location_str}")
 
     # Download agent codebase
@@ -86,11 +81,19 @@ def index(entry: EntryInformation):
 
     metadata_json = Path(path, "metadata.json").read_text("utf-8")
 
-    generate_a2a_card(agent_py, metadata_json, entry_location_str)
-    generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str)
+    generate_a2a_card(agent_py, metadata_json, entry_location_str, output_directory)
+    generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str, output_directory)
+
+def index_by_entry(entry: EntryInformation):
+    entry_location = EntryLocation(
+        namespace=entry.namespace,
+        name=entry.name,
+        version=entry.version
+    )
+    index_by_location(entry_location)
 
 
-def generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str):
+def generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str, output_directory: str = "./cards"):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     logging.info(f"Requesting LLM to generate NEAR AI metadata.json Card.")
     resp = client.responses.create(
@@ -112,7 +115,7 @@ def generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str):
     logging.info(f"Agent card for {entry_location_str} created.")
 
     Path('./cards').mkdir(exist_ok=True)
-    card_file_path = Path("./cards", f"{entry_location_str.replace('/', '_')}_metadata.json")
+    card_file_path = Path(output_directory, f"{entry_location_str.replace('/', '_')}_metadata.json")
 
     try:
         if "```json" in card_raw:
@@ -141,7 +144,7 @@ def generate_nearai_metadata_json(agent_py, metadata_json, entry_location_str):
     except Exception as e:
         logging.error(f"Error parsing NEARAI metadata.json card {card_raw}.\nError: {format_exc()}")
 
-def generate_a2a_card(agent_py, metadata_json, entry_location_str):
+def generate_a2a_card(agent_py, metadata_json, entry_location_str, output_directory: str = "./cards"):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     logging.info(f"Requesting LLM to generate Agent Card.")
     resp = client.responses.create(
@@ -165,7 +168,7 @@ def generate_a2a_card(agent_py, metadata_json, entry_location_str):
     logging.info(f"Agent card for {entry_location_str} created.")
 
     Path('./cards').mkdir(exist_ok=True)
-    card_file_path = Path("./cards", f"{entry_location_str.replace('/', '_')}.json")
+    card_file_path = Path(output_directory, f"{entry_location_str.replace('/', '_')}.json")
 
     try:
         if "```json" in card_raw:
@@ -177,6 +180,12 @@ def generate_a2a_card(agent_py, metadata_json, entry_location_str):
         logging.info(f"Agent card for {entry_location_str} was successfully saved to {card_file_path}.")
     except Exception as e:
         logging.error(f"Error parsing agent card {card_raw}.\nError: {format_exc()}")
+        try:
+            card = json.loads(card_raw)
+            card_raw = json.dumps(card, indent=2)
+        except Exception as e:
+            pass
+
         with open(card_file_path, "w", encoding="utf-8") as f:
             f.write(card_raw)
 
@@ -208,14 +217,16 @@ def get_agents():
     return entries
 
 
-def main():
+def index_all():
     entries = get_agents()
-
-    # For testing
-    entries = entries[1:10]
     for entry in entries:
-        index(entry)
+        index_by_entry(entry)
 
 
 if __name__ == "__main__":
-    main()
+    # index_all()
+    index_by_location(EntryLocation(
+        namespace="kirikiri.near",
+        name="travel-assistant",
+        version="0.0.121"
+    ))
